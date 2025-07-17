@@ -1,9 +1,11 @@
 fig/
 repo_mirrun/
 test_case/
-policy_gile/
+policy_file/
 package/
 
 data/
 
 __pycache__/
+
+cupy_test.py
