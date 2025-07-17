@@ -1,0 +1,6 @@
+/generate_ic
+/*.log
+*.ply
+/h5
+/vcont.csv
+/ABF_coords.txt
