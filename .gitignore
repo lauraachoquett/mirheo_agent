@@ -9,3 +9,7 @@ data/
 __pycache__/
 
 cupy_test.py
+
+*.ply
+*.h5
+*.xmf
