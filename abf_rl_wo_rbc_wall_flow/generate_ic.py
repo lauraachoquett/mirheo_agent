@@ -70,7 +70,7 @@ def generate_cells(p,
 
     abf_radius = p.abf_radius
     abf_max_radial_pos = R - abf_radius * 1.1 # safety
-    abf_position = np.array([domain[0]/5,4/5* domain[1], 1/2* domain[2]])
+    abf_position = np.array([domain[0]/5,1/2* domain[1], 1/2* domain[2]])
     abf_position[1] -= abf_uncenter_factor * abf_max_radial_pos
 
 

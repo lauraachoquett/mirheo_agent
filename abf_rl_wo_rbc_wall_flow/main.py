@@ -227,7 +227,7 @@ def run_capillary_flow(p: 'SimulationParams',
 
         state = u.getState()
         T_precession = 2 * np.pi / omega
-        dt_control = 3 * T_precession
+        dt_control = 2 * T_precession
         control_update_every = int(dt_control / dt) 
         # Variables to store initialization state and path data
         init = True
@@ -248,14 +248,14 @@ def run_capillary_flow(p: 'SimulationParams',
                 r0 = [pos[0], pos[1], pos[2]]
                 p0 = np.array(r0)
                 # INIT PATH
-                # path ,d = generate_simple_line(p0,p_end,100000)
-                path = generate_helix(num_points=50000, radius=R*3/5, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])
+                path ,d = generate_simple_line(p0,p_end,100000)
+                # path = generate_helix(num_points=50000, radius=R*3/5, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])
                 print("Distance between point path :",np.linalg.norm(path[1]-path[0]))
                 T_rmf, N_rmf, B_rmf = double_reflection_rmf(path)
                 paraview_export(path, 'paraview_export/')
                 B_dir = np.array(T_rmf[0])
                 print("INIT : B ",B_dir)
-                policy.init_state(p0, path, T_rmf, N_rmf, B_rmf)
+                policy.init_state(np.array(r0), path, T_rmf, N_rmf, B_rmf)
                 init = False  # Set init to False to avoid recomputation
 
             else : 

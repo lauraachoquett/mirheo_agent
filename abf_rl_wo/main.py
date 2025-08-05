@@ -226,7 +226,6 @@ def run_capillary_flow(p: 'SimulationParams',
         control_update_every = int(dt_control / dt) 
         
         policy = load_policy(path_policy, mygpu, 5,False,control_update_every)
-        
         # Variables to store initialization state and path data
         init = True
         path = None
@@ -244,7 +243,7 @@ def run_capillary_flow(p: 'SimulationParams',
                 pos = state.domain_info.local_to_global(pos)
                 print("INIT : pos abf ",pos)
                 r0 = np.array([pos[0], pos[1], pos[2]])
-                p0 = np.array(r0) + np.array([0,5,0])
+                p0 = np.array(r0) 
                 # INIT PATH
                 path ,d = generate_simple_line(p0,p_end,100000)
                 # path = generate_helix(num_points=50000, radius=R*1/3, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])

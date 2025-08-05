@@ -9,18 +9,18 @@ Re=0.5
 RA=6
 Ht=0.20
 auf=0 # (relative) initial radial position of the abf
-mean_vel=0_mm_per_s
+mean_vel=3.5_mm_per_s
 control_param=0
 abf_L=10
 abf_P=4
-seed=56789
+seed=12345
 dry_run=false
 L=100_um
 R=10_um
 abf_radius=1.63445_um
 freq=1000_Hz
 magn_m=1e-11_N_m_per_T
-description='helix - Different length scale - Wall - RBC - with flow'
+description='line - Different length scale - Wall - RBC - with flow'
 usage()
 {
     cat <<EOF
@@ -77,9 +77,9 @@ abf_data_dir=$srcdir/data
 abf_tools_dir=$srcdir/ABFs/tools
 policy_dir=$srcdir/../policy_file
 
-# origin_abf_mesh=$abf_data_dir/helix_head_P_${abf_P}_L_${abf_L}.ply
+origin_abf_mesh=$abf_data_dir/helix_head_P_${abf_P}_L_${abf_L}.ply
 
-origin_abf_mesh=$abf_data_dir/helix_head_P_2.5.ply
+# origin_abf_mesh=$abf_data_dir/helix_head_P_2.5.ply
 
 rundir=$prefix/Re_${Re}_Ht_${Ht}_L_${abf_L}_P_${abf_P}_V_${mean_vel}_alpha_${control_param}_auf_${auf}_seed_${seed}
 

@@ -12,7 +12,7 @@ mean_vel=0_mm_per_s
 control_param=0
 abf_L=10
 abf_P=4
-seed=11111
+seed=12
 dry_run=false
 L=100_um
 R=10_um
@@ -136,7 +136,7 @@ run()
     mir.run -n 2 python3 ./main.py \
 	    --parameters $parameters \
 	    --abf-coords $abf_coords \
-        --policy $policy_dir/models_07_10_10_33/agent \
+        --policy $policy_dir/models_07_23_12-21/agent \
 	    --no-visc
 }
 

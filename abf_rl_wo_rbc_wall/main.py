@@ -221,7 +221,7 @@ def run_capillary_flow(p: 'SimulationParams',
         torch.cuda.set_device(mygpu)
         cp.cuda.runtime.setDevice(mygpu)
 
-        policy = load_policy(path_policy, mygpu, 5,True)
+        policy = load_policy(path_policy, mygpu, 5,False)
         B_magn = p.magn_B
         m_magn = p.magn_m
         omega = p.omega
@@ -249,8 +249,8 @@ def run_capillary_flow(p: 'SimulationParams',
                 r0 = [pos[0], pos[1], pos[2]]
                 p0 = np.array(r0)
                 # INIT PATH
-                path ,d = generate_simple_line(p0,p_end,100000)
-                # path = generate_helix(num_points=50000, radius=R*1/3, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])
+                # path ,d = generate_simple_line(p0,p_end,100000)
+                path = generate_helix(num_points=50000, radius=R*1/3, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])
                 print("Distance between point path :",np.linalg.norm(path[1]-path[0]))
                 T_rmf, N_rmf, B_rmf = double_reflection_rmf(path)
                 paraview_export(path, 'paraview_export/')

@@ -17,3 +17,4 @@ cupy_test.py
 Miniforge3-Linux-x86_64.sh
 abf_rl_wo/submit_job.slurm
 environment.yml
+package/

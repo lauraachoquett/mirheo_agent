@@ -72,7 +72,7 @@ class PolicyEvaluator:
         
     def compute_state(self, x, path, T, N, B, dt):
         self.x = x
-        
+        self.x_list.append(x)
         try : 
             d, id_cp = min_dist_closest_point(self.x, path)
         except Exception as e:

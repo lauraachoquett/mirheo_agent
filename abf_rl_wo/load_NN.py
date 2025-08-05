@@ -12,17 +12,20 @@ import pickle
 
 class PolicyEvaluator:
     def __init__(self, policy_file: str, device_id: str, n_lookahead: int,  previous_action :bool,control_update_every:int):
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = torch.device(f"cuda:{device_id}" if torch.cuda.is_available() else "cpu")
         self.n_lookahead = n_lookahead
 
         state_dim = 3 * (1 + 1 + n_lookahead)
-        if previous_action:
+        self.previous_action = previous_action
+        if self.previous_action:
             state_dim+=3
             
         action_dim = 3
         max_action = np.inf
         self.agent = TD3(state_dim, action_dim, max_action)
         self.agent.load(policy_file, device=self.device)
+        print("!!!!!!!!!!!!!!!! Agent loaded on : !!!!!!!!!!!!!!!!!!", self.device)
+        
 
         self.radius_biggest_ca_p = 0.269
         self.radius_biggest_ca_grid = 6.43
@@ -133,7 +136,10 @@ class PolicyEvaluator:
                 next_p_local = coordinate_in_path_ref_3D(self.p_cp, next_p, self.t, self.n, self.b).reshape(1, 3)
                 lookahead.append(next_p_local)
             result.append(np.concatenate(lookahead, axis=0))
-        # result.append(self.past_action.reshape(1, 3))
+            
+        if self.previous_action:
+            result.append(self.past_action.reshape(1, 3))
+            
         state_true = np.concatenate(result, axis=0)
         ideal_state = np.array([s_scaled,
             [ 1.00000000e-01, -8.46208763e-08,  8.03898274e-07],

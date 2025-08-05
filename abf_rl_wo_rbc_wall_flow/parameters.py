@@ -204,15 +204,7 @@ def create_parameters(ureg,
     dpd_rbco_prms = dpdprops.create_fsi_dpd_params(fluid_params=dpd_oo_prms, nd_membrane=nd_2D_membrane)
     dpd_rbci_prms = dpdprops.create_fsi_dpd_params(fluid_params=dpd_ii_prms, nd_membrane=nd_2D_membrane)
     
-    # body force
-    D_ = 2 * R_
-    D = 2 * R
-    eta0 = dpd_oo_prms.dynamic_viscosity()
-    eta_eff = eta0 * estimated_relative_viscosity(D_, Ht)
-    Vmean = Vmax/2
-    Q = Vmean * np.pi * R**2
-    pressure_gradient = 128 * eta_eff * Q / (np.pi * D**4)
-    f = Vmax * 4 * eta_eff / (R**2 * nd)
+
     
     # abf params
 
@@ -228,6 +220,18 @@ def create_parameters(ureg,
 
     mean_vel = float(mean_vel_ / length_scale_ * time_scale_)
 
+
+    # body force
+    D_ = 2 * R_
+    D = 2 * R
+    eta0 = dpd_oo_prms.dynamic_viscosity()
+    eta_eff = eta0 * estimated_relative_viscosity(D_, Ht)
+    Vmean = mean_vel
+    Q = Vmean * np.pi * R**2
+    pressure_gradient = 128 * eta_eff * Q / (np.pi * D**4)
+    f = 2*Vmean * 4 * eta_eff / (R**2 * nd)
+    
+    
     # align the mesh to its principal axes
     I = mesh_abf.moment_inertia
 

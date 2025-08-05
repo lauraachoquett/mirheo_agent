@@ -28,7 +28,7 @@ class PolicyEvaluator:
         self.radius_biggest_ca_grid = 6.43
         self.radius_biggest_phys = 20  # micrometer
 
-        self.length_cylinder = 100
+        self.length_cylinder = 35
         self.typical_length_rom = 1
         self.length_scale = self.length_cylinder / self.typical_length_rom
         
