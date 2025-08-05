@@ -2,10 +2,11 @@ fig/
 repo_mirrun/
 test_case/
 policy_file/
-package/
+packages/
 
 data/
-
+jobs/
+test/
 __pycache__/
 
 cupy_test.py
@@ -13,3 +14,6 @@ cupy_test.py
 *.ply
 *.h5
 *.xmf
+Miniforge3-Linux-x86_64.sh
+abf_rl_wo/submit_job.slurm
+environment.yml
