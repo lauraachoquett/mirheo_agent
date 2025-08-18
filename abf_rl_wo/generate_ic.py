@@ -131,6 +131,7 @@ def main(argv):
     parser.add_argument('--Ht', type=float, default=0.106, help="Hematocrit, in [0,1].")
     parser.add_argument('--abf-uncenter-factor', type=float, default=0, help="How uncenter the abf is placed, in [0,1]: 0 = centerd, 1 = at the border of the pipe")
     parser.add_argument('--seed', type=int, default=4242, help="Random seed for initial positions.")
+    parser.add_argument('--ranks',          type=int, nargs=3, default=(1, 1, 1), help="Ranks in each dimension.")
     args = parser.parse_args(argv)
 
     abf_coords = np.loadtxt(args.abf_coords)
@@ -138,6 +139,7 @@ def main(argv):
     p = load_parameters(args.parameters)
 
     generate_cells(p,
+                ranks=tuple(args.ranks),
                    abf_coords=abf_coords.tolist(),
                    Ht=args.Ht,
                    abf_uncenter_factor=args.abf_uncenter_factor,

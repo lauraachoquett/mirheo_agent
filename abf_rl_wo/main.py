@@ -6,17 +6,19 @@ except Exception as e:
     print("cupy is not installed. This will cause an error if control is set.")
     cp = None
 import torch
-
+import cupy as cp
 import quaternion
 import mirheo as mir
 import numpy as np
 import sys
+import traceback
+
 from mpi4py import MPI
 from utils import generate_simple_line,double_reflection_rmf,generate_helix,paraview_export
 from parameters import (SimulationParams,
                         load_parameters)
 
-from load_NN import (load_policy)
+from load_NN import (load_policy,ABFRankTracker)
 
 def get_quaternion_between_vectors(u, v):
     k_cos_theta = np.dot(u, v)
@@ -44,22 +46,15 @@ def run_capillary_flow(p: 'SimulationParams',
     L  = p.L
     R  = p.R
     RA = p.RA
-    f = p.force
     f=0
     max_contact_force = p.rbc_params.shear_modulus() * RA * 0.5
-    print("With RBCs :",with_rbc)
     dt = p.dpd_ii.get_max_dt()
     tend = 200 * 2 * np.pi / p.omega
     niters = int(tend/dt)
 
     domain = (L, 2*R + 4*rc, 2*R + 4*rc)
 
-    # uargs = {
-    #     'nranks': ranks,
-    #     'domain': domain,
-    #     'debug_level': 0,
-    #     'log_filename': 'log'
-    # }
+
     
     uargs = {'nranks': ranks,
              'domain': domain,
@@ -204,107 +199,154 @@ def run_capillary_flow(p: 'SimulationParams',
     u.registerPlugins(mir.Plugins.createStats('stats.csv', every=stats_every))
     u.registerPlugins(mir.Plugins.createDumpObjectStats("obj_stats", ov=pv_abf, dump_every=dump_every, filename="obj_stats/abf.csv"))
 
+    compute_comm = None
+    mygpu = None
+    policy = None
     
+    B_magn = p.magn_B
+    m_magn = p.magn_m
+    omega = p.omega
+    
+    print(f"BEFORE THE LOOP", flush=True)
+    rank = comm.Get_rank()
+    print(f"[Rank {rank}] isComputeTask() = {u.isComputeTask()}", flush=True)
     
     if path_policy is not None:
-        import cupy as cp
-        import quaternion
-        compute_comm = comm.Split(color=int(u.isComputeTask()), key=comm.Get_rank())
+        print("enter the loop")
+        compute_comm = comm.Split(color=int(u.isComputeTask()), key=rank)
         ngpus = cp.cuda.runtime.getDeviceCount()
-
         mygpu = compute_comm.rank % ngpus
-        torch.cuda.set_device(mygpu)
-        cp.cuda.runtime.setDevice(mygpu)
+        
 
-        B_magn = p.magn_B
-        m_magn = p.magn_m
-        omega = p.omega
+        # print(f"[Rank {rank}] CuPy sees {ngpus} GPUs")
+        # print(f"[Rank {rank}] PyTorch sees {torch_gpu_count} GPUs")
+
+        # for i in range(torch_gpu_count):
+        #     print(f"[Rank {rank}] PyTorch device {i}: {torch.cuda.get_device_name(i)}")
+        
+        print(f"[Rank {rank}] compute_comm.rank = {compute_comm.rank}, mygpu = {mygpu}", flush=True)
+        cp.cuda.runtime.setDevice(mygpu)
+        print(f"[Rank {rank}] Assigned GPU {mygpu}", flush=True)
 
         state = u.getState()
         T_precession = 2 * np.pi / omega
-        dt_control = 2 * T_precession 
+        dt_control = 2*T_precession 
         control_update_every = int(dt_control / dt) 
+
         
-        policy = load_policy(path_policy, mygpu, 5,False,control_update_every)
-        # Variables to store initialization state and path data
         init = True
         path = None
         T_rmf = N_rmf = B_rmf = None
-        B_dir = None  # Start as None to detect first computation
+        B_dir = np.zeros(3)
         
+        is_compute = u.isComputeTask()
+
+        compute_comm_bis = comm.Split(color=1 if is_compute else MPI.UNDEFINED,
+                                key=rank)
+        if is_compute:
+            print(f"[Rank {rank}] set torch device on GPU {0}...", flush=True)
+            torch.cuda.set_device(0)
+            print(f"[Rank {rank}] Loading policy on GPU {0}...", flush=True)
+
+            policy = load_policy(policy_file = path_policy, device_id = 0, n_lookahead = 5,previous_action =  False, control_update_every = control_update_every)
+            print(f"[Rank {rank}] Policy loaded successfully.", flush=True)
+            torch.cuda.synchronize()
+
+            print(f"[Rank {rank}] compute_comm_bis.rank = {compute_comm_bis.rank}", flush=True)
+            
+            abf_rank = ABFRankTracker()
+            print(f"[Rank {comm.Get_rank()}] class abf_rank init : OK", flush=True)
+            
         def magnetic_field_3D(t):
-            nonlocal init, path, T_rmf, N_rmf, B_rmf, B_dir,t_dump_every
-            p_end = np.array([domain[0], domain[1]*1/2, domain[2]*1/2])
+            nonlocal init, path, T_rmf, N_rmf, B_rmf, B_dir,t_dump_every,abf_rank
             new_action=False
+            
+            ce = pv_abf.local.per_object['com_extents']
+            num_abfs = ce.__cuda_array_interface__['shape'][0]
+            has_abf   = (num_abfs > 0)
+            info = [np.ones(3)*-np.inf,np.ones(3)*-np.inf] #previous_x, previous_action
+
             if init:
-                ce = pv_abf.local.per_object['com_extents']
-                com_extents_abf = cp.asarray(ce)
-                pos = com_extents_abf[0, 0:3].get()
-                pos = state.domain_info.local_to_global(pos)
-                print("INIT : pos abf ",pos)
-                r0 = np.array([pos[0], pos[1], pos[2]])
-                p0 = np.array(r0) 
                 # INIT PATH
+                p_end = np.array([domain[0], domain[1]*1/2, domain[2]*1/2])
+                p0 =  np.array([0, domain[1]*1/2, domain[2]*1/2])
+                # LINE OR HELIX
                 path ,d = generate_simple_line(p0,p_end,100000)
                 # path = generate_helix(num_points=50000, radius=R*1/3, pitch=130, turns=1, clockwise=True, x_0=pos[0], y_0=pos[1], z_0=pos[2])
-                print("Distance between point path :",np.linalg.norm(path[1]-path[0]))
+                
+                print("Distance between point path :",np.linalg.norm(path[1]-path[0]),flush=True)
                 T_rmf, N_rmf, B_rmf = double_reflection_rmf(path)
-                paraview_export(path, 'paraview_export/')
-                policy.init_state(p0, path, T_rmf, N_rmf, B_rmf)
-                policy.compute_state(r0, path, T_rmf, N_rmf, B_rmf, dt)
-                B_dir =  np.array(policy(new_action=True))
-                print("INIT : B ",B_dir)
-                init = False  # Set init to False to avoid recomputation
-
-            else : 
-                ce = pv_abf.local.per_object['com_extents']
+                
+                if u.isMasterTask():
+                    paraview_export(path, 'paraview_export/')
+                
+                
+            if has_abf:
                 com_extents_abf = cp.asarray(ce)
                 pos = com_extents_abf[0, 0:3].get()
                 pos = state.domain_info.local_to_global(pos)
                 r = np.array([pos[0], pos[1], pos[2]])
                 
-                if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control):
+                if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init:
                     new_action = True
-                    print("New Action")
+                    print("New Action",flush=True)
+                    policy.compute_state(r, path, T_rmf, N_rmf, B_rmf, dt*control_update_every,abf_rank.previous_action,abf_rank.previous_x,init)
                     _ = policy.mean_pos_wo(r)
-                    policy.compute_state(r, path, T_rmf, N_rmf, B_rmf, dt*control_update_every)
                     policy.reset_pos_wo()
-                else: 
-                    policy.add_to_list_pos(r)    
-                B_dir = np.array(policy(new_action))
-                if new_action :
-                    print('Direction : ',B_dir)
-                    print('-----------------------------------------------------------')
-                    
-            B_dir /= np.linalg.norm(B_dir)
-            # rew_t, rew_d, rew_target, rew = policy.reward(p_end, dt)
-                        
-            omega_t = omega * t
-            ex = (1, 0, 0)
 
-            q = get_quaternion_between_vectors(ex, B_dir)
-            q = quaternion.from_float_array(q)
-            B = (0.0,
-                 B_magn * np.cos(omega_t),
-                 B_magn * np.sin(omega_t))
+                else: 
+                    policy.add_to_list_pos(r) 
+                        
+                B_dir = np.array(policy(new_action))
+                B_dir /= np.linalg.norm(B_dir) 
+                
+                if new_action :
+                    info =policy.forward_info()
+                    print(f"[Rank {comm.Get_rank()}] has ABF and will send info  : {info}", flush=True)
+                    print('Direction chosen by the policy : ',B_dir,flush=True)
+                        
+                if (t%(dump_every*dt) <= 1*dt):
+                    policy.history_state()
+                        
+                omega_t = omega * t
+                ex = (1, 0, 0)
+
+                q = get_quaternion_between_vectors(ex, B_dir)
+                q = quaternion.from_float_array(q)
+                B = (0.0,
+                    B_magn * np.cos(omega_t),
+                    B_magn * np.sin(omega_t))
+
+                output = quaternion.rotate_vectors(q, B)
+            else : 
+                output = np.zeros(3) 
+            ## Send information : 
+            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init:
+                abf_rank.share_information(info,compute_comm_bis)
+                print(f"[Rank {comm.Get_rank()}] received this information : previous_x : {abf_rank.previous_x} and previous_action : {abf_rank.previous_action}", flush=True)
+                print('-----------------------------------------------------------',flush=True)
+                print(f"[Rank {comm.Get_rank()}] has direction : {B_dir} and magnetic field : {output} (B : {B})", flush=True)
+
+                init = False
+ 
             
-            if (t%(dump_every*dt) <= 1*dt):
-                policy.history_state()
-            output = quaternion.rotate_vectors(q, B)
+
             return output
         
-        magnetic_field = magnetic_field_3D
+    
+    magnetic_field = magnetic_field_3D
          
-    u.registerPlugins(mir.Plugins.createExternalMagneticTorque("magnetic_torque", pv_abf, m_magn, magnetic_field))
 
+    u.registerPlugins(mir.Plugins.createExternalMagneticTorque("magnetic_torque", pv_abf, m_magn, magnetic_field))
+        
     if u.isMasterTask():
         print(f"tend = {tend}")
         print(f"dt = {dt}")
         print(f"substeps = {substeps}")
         print(f"omega = {omega}")
         print(f"dump every = {dump_every}")
-        print("control_update_every : ", control_update_every)
-        print("time between update : ",dt_control)
+        # print("control_update_every : ", control_update_every)
+        # print("time between update : ",dt_control)
 
         sys.stdout.flush()
 
@@ -324,7 +366,7 @@ def main(argv):
     parser.add_argument('--checkpoint-dir', type=str, default=None, help="The checkpoint directory name (no checkpoint if not set)")
     parser.add_argument('--no-visc', action='store_true', default=False, help="Disable viscosity")
     parser.add_argument('--with_rbc', action='store_true', default=False, help="Disable viscosity")
-    parser.add_argument('--policy', type=str, default=None, help="If set, the json file that contains the NN (from korali)")    
+    parser.add_argument('--policy', type=str, default=None, help="If set, the json file that contains the NN")    
     parser.add_argument('--ranks',          type=int, nargs=3, default=(1, 1, 1), help="Ranks in each dimension.")
     
     args = parser.parse_args(argv)

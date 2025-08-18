@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import pyvista as pv
+from scipy.interpolate import interp1d
 
 def coordinate_in_path_ref_3D(p, x, t, n, b):
     B = np.column_stack((t, n, b))
@@ -109,7 +110,15 @@ def double_reflection_rmf(points):
     B = np.array([f[2] for f in frames])
     return T, N, B
 
-
+def resample_path(path, n_points=500):
+    distances = np.sqrt(np.sum(np.diff(path, axis=0) ** 2, axis=1))
+    cumulative = np.concatenate(([0], np.cumsum(distances)))
+    total_length = cumulative[-1]
+    fx = interp1d(cumulative, path[:, 0], kind="linear")
+    fy = interp1d(cumulative, path[:, 1], kind="linear")
+    fz = interp1d(cumulative, path[:, 2], kind="linear")
+    new_distances = np.linspace(0, total_length, n_points)
+    return np.stack((fx(new_distances), fy(new_distances),fz(new_distances)), axis=1), np.sum(distances)
 
 if __name__ == '__main__':
     R = 17.96

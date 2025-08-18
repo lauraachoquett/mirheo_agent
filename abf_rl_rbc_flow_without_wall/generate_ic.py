@@ -60,9 +60,9 @@ def generate_cells(p,
     drag = 2
 
     domain = (Lx, Ly, Lz)
-    path = generate_helix(num_points=10000, radius=Ly*1/3, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
+    path = generate_helix(num_points=10000, radius=Ly*1/4, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
 
-    abf_position = np.array(path[2000])
+    abf_position = np.array(path[3500])
 
     scale_ini = 0.5
     com_q = gen_com_q_pipe(abf_position=abf_position,

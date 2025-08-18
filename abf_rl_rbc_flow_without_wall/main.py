@@ -7,16 +7,20 @@ except Exception as e:
     cp = None
 import torch
 
+from utils import coordinate_in_path_ref_3D,coordinate_in_global_ref_3D
+import time
+
 import quaternion
 import mirheo as mir
 import numpy as np
 import sys
 from mpi4py import MPI
-from utils import generate_simple_line,double_reflection_rmf,generate_helix,paraview_export
+from utils import generate_simple_line,double_reflection_rmf,generate_helix,paraview_export,resample_path
 from parameters import (Parameters,
                         load_parameters)
 
-from load_NN import (load_policy)
+from load_NN import (load_policy,ABFRankTracker)
+from math import floor,ceil
 
 def get_quaternion_between_vectors(u, v):
     k_cos_theta = np.dot(u, v)
@@ -38,7 +42,7 @@ def run_capillary_flow(p: 'Parameters',
                        restart_directory: str=None,
                        checkpoint_directory: str=None,
                         path_policy: str=None,
-                        with_rbc: bool = False,):
+                        with_previous_action: bool = False,):
 
     rc = p.rc
     Lx = p.Lx
@@ -47,7 +51,7 @@ def run_capillary_flow(p: 'Parameters',
     RA = p.RA
     v = p.mean_vel
     max_contact_force = p.rbc_params.shear_modulus() * RA * 0.5
-    print("With RBCs :",with_rbc)
+    print("With RBCs :",with_previous_action)
     dt = p.dpd_ii.get_max_dt()
     tend = 200 * 2 * np.pi / p.omega
     niters = int(tend/dt)
@@ -244,91 +248,146 @@ def run_capillary_flow(p: 'Parameters',
 
     
     
+    compute_comm = None
+    mygpu = None
+    policy = None
+    
+    B_magn = p.magn_B
+    m_magn = p.magn_m
+    omega = p.omega
+    
+    print(f"BEFORE THE LOOP", flush=True)
+    rank = comm.Get_rank()
+    print(f"[Rank {rank}] isComputeTask() = {u.isComputeTask()}", flush=True)
+    
     if path_policy is not None:
-        import cupy as cp
-        import quaternion
-        compute_comm = comm.Split(color=int(u.isComputeTask()), key=comm.Get_rank())
+        print("enter the loop")
+        compute_comm = comm.Split(color=int(u.isComputeTask()), key=rank)
         ngpus = cp.cuda.runtime.getDeviceCount()
-
         mygpu = compute_comm.rank % ngpus
-        torch.cuda.set_device(mygpu)
-        cp.cuda.runtime.setDevice(mygpu)
+        
 
-        policy = load_policy(path_policy, mygpu, 5,False)
-        B_magn = p.magn_B
-        m_magn = p.magn_m
-        omega = p.omega
+
+        for i in range(ngpus):
+            print(f"[Rank {rank}] PyTorch device {i}: {torch.cuda.get_device_name(i)}")
+        
+        print(f"[Rank {rank}] compute_comm.rank = {compute_comm.rank}, mygpu = {mygpu}")
+        cp.cuda.runtime.setDevice(mygpu)
+        print(f"[Rank {rank}] Assigned GPU {mygpu}")
 
         state = u.getState()
         T_precession = 2 * np.pi / omega
-        dt_control = 1/5*T_precession
-        
+        dt_control = T_precession
         control_update_every = int(dt_control / dt) 
-        # Variables to store initialization state and path data
+
+        
+        
         init = True
         path = None
         T_rmf = N_rmf = B_rmf = None
-        B_dir = None  # Start as None to detect first computation
+        B_dir = np.zeros(3)
         
+        is_compute = u.isComputeTask()
+
+        compute_comm_bis = comm.Split(color=1 if is_compute else MPI.UNDEFINED,
+                                key=rank)
+        if is_compute:
+            print(f"[Rank {rank}] set torch device on GPU {mygpu}...")
+            torch.cuda.set_device(mygpu)
+            print(f"[Rank {rank}] Loading policy on GPU {mygpu}...")
+
+            policy = load_policy(policy_file = path_policy, device_id = mygpu, n_lookahead = 5,previous_action =  with_previous_action, control_update_every = control_update_every,rank=rank)
+            print(f"[Rank {rank}] Policy loaded successfully.")
+            torch.cuda.synchronize()
+
+            print(f"[Rank {rank}] compute_comm_bis.rank = {compute_comm_bis.rank}")
+            
+            abf_rank = ABFRankTracker()
+            print(f"[Rank {comm.Get_rank()}] class abf_rank init : OK")
+            
         def magnetic_field_3D(t):
-            nonlocal init, path, T_rmf, N_rmf, B_rmf, B_dir,t_dump_every
-            p_end = np.array([domain[0], domain[1]*1/2, domain[2]*1/2])
-            new_action=False
+            nonlocal init, path, T_rmf, N_rmf, B_rmf, B_dir,t_dump_every,abf_rank
+            info = np.ones((5,3))*-np.inf #previous_x, previous_action,previous_t,previous_n,previous_b
+
             if init:
-                ce = pv_abf.local.per_object['com_extents']
-                com_extents_abf = cp.asarray(ce)
-                pos = com_extents_abf[0, 0:3].get()
-                pos = state.domain_info.local_to_global(pos)
-                print("INIT : pos abf ",pos)
-                r0 = [pos[0], pos[1], pos[2]]
                 # INIT PATH
-                p0 = np.array(r0)
-                # path ,d = generate_simple_line(p0,p_end,10000)
-                path = generate_helix(num_points=10000, radius=Ly*1/3, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
+                p_end = np.array([domain[0], domain[1]*1/2, domain[2]*1/2])
+                p0 =  np.array([0, domain[1]*1/2, domain[2]*1/2])
+                # LINE OR HELIX
+                # path ,d = generate_simple_line(p0,p_end,100000)
+                path = generate_helix(num_points=10000, radius=Ly*1/4, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
+                # Resample path if necessary : 
+                dist = np.array([abs(path[i + 1] - path[i]) for i in range(len(path) - 1)])
+                distance_between_points = 3.5e-2
+                n = ceil(np.max(dist) / distance_between_points)
+                if n > 1:
+                    path, distances = resample_path(path, len(path) * n)
+                    
                 print("Distance between point path :",np.linalg.norm(path[1]-path[0]))
                 T_rmf, N_rmf, B_rmf = double_reflection_rmf(path)
-                paraview_export(path, 'paraview_export/')
-                policy.init_state(np.array(r0), path, T_rmf, N_rmf, B_rmf)
-                B_dir = np.array(T_rmf[2000])
-                init = False  # Set init to False to avoid recomputation
-
-            else : 
+                
+                if u.isMasterTask():
+                    paraview_export(path, f'paraview_export/')
+                
+                
+            start_time = time.time()
+            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init:
                 ce = pv_abf.local.per_object['com_extents']
-                com_extents_abf = cp.asarray(ce)
-                pos = com_extents_abf[0, 0:3].get()
-                pos = state.domain_info.local_to_global(pos)
-                r = np.array([pos[0], pos[1], pos[2]])
-                if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control):
-                    new_action = True
-                    print("New Action")
-                    _ = policy.mean_pos_wo(r)
-                    policy.compute_state(r, path, T_rmf, N_rmf, B_rmf, dt*control_update_every)
-                    policy.reset_pos_wo()
-                else: 
-                    policy.add_to_list_pos(r)    
-                B_dir = np.array(policy(new_action))
-                if new_action :
-                    print('Direction : ',B_dir)
-                    print('-----------------------------------------------------------')
+                num_abfs = ce.__cuda_array_interface__['shape'][0]
+                has_abf   = (num_abfs > 0)
+                if has_abf: ## Rank owner 
                     
-            B_dir /= np.linalg.norm(B_dir)
-            # rew_t, rew_d, rew_target, rew = policy.reward(p_end, dt)
+                    ### Position of the ABF : 
+                    
+                    com_extents_abf = cp.asarray(ce)
+                    pos = com_extents_abf[0, 0:3].get()
+                    pos = state.domain_info.local_to_global(pos)
+                    r = np.array([pos[0], pos[1], pos[2]]) 
+                    
+                    ### Compute state :
+                    policy.compute_state(r, path, T_rmf, N_rmf, B_rmf, dt*control_update_every,abf_rank.previous_action,abf_rank.previous_x,init)
+                    
+                    ### New action
+                    policy(t)
+                
+                    ### previous_x, previous_action,previous_t,previous_n,previous_b put in info
+                    info = policy.forward_info()
+                    print(f"[Rank {comm.Get_rank()}] has ABF and will send info  : {info}")
                         
+                    ### Save states
+                    policy.history_state()
+                        
+            ## Share information : 
+            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init:
+                abf_rank.share_information(info,compute_comm_bis)
+                
+                # print(f"[Rank {comm.Get_rank()}] received this information : previous_x : {abf_rank.previous_x} and previous_action : {abf_rank.previous_action}")
+                # print('-----------------------------------------------------------')
+
+
             omega_t = omega * t
             ex = (1, 0, 0)
+            ## Compute the direction with the last action compute by the rank owner
+            B_dir = coordinate_in_global_ref_3D(np.zeros(3), abf_rank.previous_action,abf_rank.previous_t,abf_rank.previous_n,abf_rank.previous_b)
 
             q = get_quaternion_between_vectors(ex, B_dir)
             q = quaternion.from_float_array(q)
             B = (0.0,
-                 B_magn * np.cos(omega_t),
-                 B_magn * np.sin(omega_t))
-            
-            if (t%(dump_every*dt) <= 1*dt):
-                policy.history_state()
+                B_magn * np.cos(omega_t),
+                B_magn * np.sin(omega_t))
+
             output = quaternion.rotate_vectors(q, B)
+            
+            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init : ## Print ##
+                print(f"[Rank {comm.Get_rank()}] has direction : {B_dir} and magnetic field : {output} (B : {B})", flush=True)
+                print(f"[Rank {comm.Get_rank()}] Time : {(time.time() - start_time) * 1e3} ms")
+
+                init = False
+                
             return output
         
-        magnetic_field = magnetic_field_3D
+    
+    magnetic_field = magnetic_field_3D
          
     u.registerPlugins(mir.Plugins.createExternalMagneticTorque("magnetic_torque", pv_abf, m_magn, magnetic_field))
 
@@ -361,7 +420,7 @@ def main(argv):
     parser.add_argument('--restart-dir', type=str, default=None, help="The restart directory name (no restart if not set)")
     parser.add_argument('--checkpoint-dir', type=str, default=None, help="The checkpoint directory name (no checkpoint if not set)")
     parser.add_argument('--no-visc', action='store_true', default=False, help="Disable viscosity")
-    parser.add_argument('--with_rbc', action='store_true', default=False, help="With RBC")
+    parser.add_argument('--with_previous_action', action='store_true', default=False, help="With previous action")
     parser.add_argument('--policy', type=str, default=None, help="If set, the json file that contains the NN (from korali)")    
     parser.add_argument('--ranks',          type=int, nargs=3, default=(1, 1, 1), help="Ranks in each dimension.")
     
@@ -378,7 +437,7 @@ def main(argv):
         restart_directory=args.restart_dir,
         checkpoint_directory=args.checkpoint_dir,
         path_policy=args.policy,
-        with_rbc = args.with_rbc
+        with_previous_action = args.with_previous_action
                        )
 
 if __name__ == '__main__':

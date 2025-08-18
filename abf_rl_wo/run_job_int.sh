@@ -10,7 +10,7 @@ mean_vel=0_mm_per_s
 control_param=0
 abf_L=10
 abf_P=4
-seed=123
+seed=234
 dry_run=false
 L=100_um
 R=10_um
@@ -18,8 +18,16 @@ abf_radius=1.63445_um
 freq=1000_Hz
 magn_m=1e-11_N_m_per_T
 with_rbc=False
-description='line - Different length scale'
+description='Line - Test on FASRC with 1 GPU'
+Nx=1
+Ny=1
+Nz=1
 
+((num_gpus = Nx * Ny * Nz))
+((num_ranks = 2 * num_gpus))
+
+echo "num_gpus = $num_gpus"
+echo "num_ranks = $num_ranks"
 
 # === Parsing des arguments ===
 usage() {
@@ -109,7 +117,7 @@ mamba activate /n/home12/lchoquet/myenvMS
 cd $rundir
 
 echo "=== PREPROCESSING ==="
-srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./parameters.py \
+srun --mpi=pmi2 -n 1 /n/home12/lchoquet/myenvMS/bin/python3 ./parameters.py \
     $origin_abf_mesh \
     --Re $Re --RA $RA --Ht $Ht \
     --abf-radius $abf_radius --L $L --R $R \
@@ -118,7 +126,7 @@ srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./parameters.py \
     --out-prms $parameters --out-abf-mesh $abf_mesh
 
 echo "=== PARAMETERS CREATED ==="
-srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./generate_frozen.py \
+srun --mpi=pmi2 -n 1 /n/home12/lchoquet/myenvMS/bin/python3 ./generate_frozen.py \
     $abf_mesh \
     --out-mesh $abf_mesh \
     --out-coords $abf_coords
@@ -132,7 +140,7 @@ echo "auf = $auf"
 
 echo "=== GENERATING RBCs ICs ==="
 
-srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./generate_ic.py \
+srun --mpi=pmi2 -n $num_ranks /n/home12/lchoquet/myenvMS/bin/python3 ./generate_ic.py \
     $parameters \
     --abf-coords $abf_coords \
     --Ht $Ht \
@@ -140,8 +148,8 @@ srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./generate_ic.py \
     --seed $seed
 
 echo "=== RUNNING SIMULATION ==="
-srun --mpi=pmi2 -n 2 /n/home12/lchoquet/myenvMS/bin/python3 ./main.py \
+srun --mpi=pmi2 -n $num_ranks /n/home12/lchoquet/myenvMS/bin/python3 ./main.py \
     --parameters $parameters \
     --abf-coords $abf_coords \
     --policy $policy_dir/models_07_10_10_33/agent \
-    --no-visc
+    --no-visc \
