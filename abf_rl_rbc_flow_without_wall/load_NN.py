@@ -28,20 +28,12 @@ class PolicyEvaluator:
         self.agent.load(policy_file, device=self.device)
         # print("Agent loaded on :", self.device)
         
-
-        self.radius_biggest_ca_p = 0.269
-        self.radius_biggest_ca_grid = 6.43
-        self.radius_biggest_phys = 20  # micrometer
-
         self.length_cylinder = 50
         self.typical_length_rom = 1
         self.length_scale = self.length_cylinder / self.typical_length_rom
         
-        # self.time_rom = 3.333e-02 / 5
-        # self.time_sim = 0.00163
-        # self.time_scale = self.time_sim / self.time_rom
-        
         self.velocity_scale = 200 / 1.0 ## TODO : Rescale ? 
+        
         self.previous_x = None
         self.x = np.zeros(3)
         self.past_action = None
@@ -195,12 +187,6 @@ class ABFRankTracker:
         self.previous_b = np.ones(3)*-np.inf
     
     def share_information(self, info, compute_comm_bis):
-        """
-        info = (x_local, action_local)
-        - x_local, action_local: arrays shape (3,), mettre -inf si pas d'ABF local
-        - compute_comm_bis: sous-communicator des compute ranks (ou MPI.COMM_NULL)
-        Retourne True si les valeurs ont changé, False sinon.
-        """
         if compute_comm_bis == MPI.COMM_NULL:
             return False  
 

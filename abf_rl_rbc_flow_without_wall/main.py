@@ -313,9 +313,11 @@ def run_capillary_flow(p: 'Parameters',
                 # INIT PATH
                 p_end = np.array([domain[0], domain[1]*1/2, domain[2]*1/2])
                 p0 =  np.array([0, domain[1]*1/2, domain[2]*1/2])
+                
                 # LINE OR HELIX
                 # path ,d = generate_simple_line(p0,p_end,100000)
                 path = generate_helix(num_points=10000, radius=Ly*1/4, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
+                
                 # Resample path if necessary : 
                 dist = np.array([abs(path[i + 1] - path[i]) for i in range(len(path) - 1)])
                 distance_between_points = 3.5e-2
@@ -324,6 +326,8 @@ def run_capillary_flow(p: 'Parameters',
                     path, distances = resample_path(path, len(path) * n)
                     
                 print("Distance between point path :",np.linalg.norm(path[1]-path[0]))
+                
+                ## Generate local frame : (RMF algorithm)
                 T_rmf, N_rmf, B_rmf = double_reflection_rmf(path)
                 
                 if u.isMasterTask():
@@ -338,7 +342,6 @@ def run_capillary_flow(p: 'Parameters',
                 if has_abf: ## Rank owner 
                     
                     ### Position of the ABF : 
-                    
                     com_extents_abf = cp.asarray(ce)
                     pos = com_extents_abf[0, 0:3].get()
                     pos = state.domain_info.local_to_global(pos)
@@ -358,16 +361,15 @@ def run_capillary_flow(p: 'Parameters',
                     policy.history_state()
                         
             ## Share information : 
-            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init:
-                abf_rank.share_information(info,compute_comm_bis)
+            abf_rank.share_information(info,compute_comm_bis)
                 
-                # print(f"[Rank {comm.Get_rank()}] received this information : previous_x : {abf_rank.previous_x} and previous_action : {abf_rank.previous_action}")
-                # print('-----------------------------------------------------------')
+            # print(f"[Rank {comm.Get_rank()}] received this information : previous_x : {abf_rank.previous_x} and previous_action : {abf_rank.previous_action}")
+            # print('-----------------------------------------------------------')
 
 
             omega_t = omega * t
             ex = (1, 0, 0)
-            ## Compute the direction with the last action compute by the rank owner
+            ## Compute the direction with the last action computed by the rank owner
             B_dir = coordinate_in_global_ref_3D(np.zeros(3), abf_rank.previous_action,abf_rank.previous_t,abf_rank.previous_n,abf_rank.previous_b)
 
             q = get_quaternion_between_vectors(ex, B_dir)
@@ -378,7 +380,8 @@ def run_capillary_flow(p: 'Parameters',
 
             output = quaternion.rotate_vectors(q, B)
             
-            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init : ## Print ##
+            ## Print ## : 
+            if ((t-dt)%dt_control <= 1*dt and t > 1*dt_control) or init : 
                 print(f"[Rank {comm.Get_rank()}] has direction : {B_dir} and magnetic field : {output} (B : {B})", flush=True)
                 print(f"[Rank {comm.Get_rank()}] Time : {(time.time() - start_time) * 1e3} ms")
 
@@ -389,7 +392,7 @@ def run_capillary_flow(p: 'Parameters',
     
     magnetic_field = magnetic_field_3D
          
-    u.registerPlugins(mir.Plugins.createExternalMagneticTorque("magnetic_torque", pv_abf, m_magn, magnetic_field))
+    # u.registerPlugins(mir.Plugins.createExternalMagneticTorque("magnetic_torque", pv_abf, m_magn, magnetic_field))
 
     if u.isMasterTask():
         print(f"tend = {tend}")

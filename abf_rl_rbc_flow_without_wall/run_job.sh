@@ -11,7 +11,7 @@ mean_vel=1_mm_per_s
 control_param=0
 abf_L=10
 abf_P=4
-seed=444446
+seed=444441
 dry_run=false
 
 
@@ -23,7 +23,7 @@ freq=1000_Hz
 magn_m=1.6e-11_N_m_per_T
 description='Helix - Test on FASRC with 2 GPUs - With Policy and Action - WORKING ! - Transition between ranks'
 
-Nx=1
+Nx=2
 Ny=1
 Nz=1
 
@@ -85,7 +85,7 @@ abf_tools_dir=$srcdir/ABFs/tools
 policy_dir=$srcdir/../policy_file
 origin_abf_mesh=$abf_data_dir/helix_head_P_${abf_P}_L_${abf_L}.ply
 
-rundir=$prefix/Re_${Re}_Ht_${Ht}_L_${abf_L}_P_${abf_P}_V_${mean_vel}_alpha_${control_param}_auf_${auf}_seed_${seed}_jobs_${num_gpus}_policy
+rundir=$prefix/Re_${Re}_Ht_${Ht}_L_${abf_L}_P_${abf_P}_V_${mean_vel}_alpha_${control_param}_auf_${auf}_seed_${seed}_jobs_${num_gpus}_test
 mkdir -p "$rundir"
 
 # === Fichiers à copier ===
@@ -105,7 +105,7 @@ cat > "$batch" <<EOS
 #SBATCH --nodes=$num_gpus            # num_ranks nœuds (un par sous-domaine)
 #SBATCH --ntasks-per-node=2           # 2 ranks MPI par nœud
 #SBATCH --gres=gpu:1                  # 1 GPU alloué par nœud
-#SBATCH -t 0-06:00
+#SBATCH -t 0-02:00
 #SBATCH --job-name=gpus
 #SBATCH --mem=10G
 #SBATCH --output=$rundir/output.log
@@ -175,15 +175,12 @@ echo "=== RUNNING SIMULATION ==="
 srun --mpi=pmi2 -n $num_ranks /n/home12/lchoquet/myenvMS/bin/python3 ./main.py \
     --parameters $parameters \
     --abf-coords $abf_coords \
-    --policy /n/home12/lchoquet/mirheo_agent/policy_file/models_07_21_10-31/agent \
+    --policy $policy_dir/models_07_10_10_33/agent \
     --no-visc \
-    --ranks $Nx $Ny $Nz \
-    --with_previous_action \
-    --checkpoint-dir $rundir/checkpoint
+    --ranks $Nx $Ny $Nz
 
 EOS
 
 # === Lancer le job ===
 echo "Soumission du job SLURM depuis : $batch"
 exec sbatch "$batch"
-
