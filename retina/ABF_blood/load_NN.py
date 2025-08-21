@@ -28,20 +28,12 @@ class PolicyEvaluator:
         self.agent.load(policy_file, device=self.device)
         # print("Agent loaded on :", self.device)
         
-
-        self.radius_biggest_ca_p = 0.269
-        self.radius_biggest_ca_grid = 6.43
-        self.radius_biggest_phys = 20  # micrometer
-
-        self.length_cylinder = 35
+        self.length_cylinder = 50
         self.typical_length_rom = 1
         self.length_scale = self.length_cylinder / self.typical_length_rom
         
-        # self.time_rom = 3.333e-02 / 5
-        # self.time_sim = 0.00163
-        # self.time_scale = self.time_sim / self.time_rom
-        
         self.velocity_scale = 200 / 1.0 ## TODO : Rescale ? 
+        
         self.previous_x = None
         self.x = np.zeros(3)
         self.past_action = None
@@ -195,12 +187,6 @@ class ABFRankTracker:
         self.previous_b = np.ones(3)*-np.inf
     
     def share_information(self, info, compute_comm_bis):
-        """
-        info = (x_local, action_local)
-        - x_local, action_local: arrays shape (3,), mettre -inf si pas d'ABF local
-        - compute_comm_bis: sous-communicator des compute ranks (ou MPI.COMM_NULL)
-        Retourne True si les valeurs ont changé, False sinon.
-        """
         if compute_comm_bis == MPI.COMM_NULL:
             return False  
 
@@ -224,7 +210,37 @@ class ABFRankTracker:
         
         self.previous_x      = x_out
         self.previous_action = a_out
-        self.previous_t = t_out
-        self.previous_n = n_out
-        self.previous_b = b_out
+        self.previous_t      = t_out
+        self.previous_n      = n_out
+        self.previous_b      = b_out
+        return True
+
+    def save(self, checkpoint_directory,filename="abf_rank_tracker.npz"):
+        os.makedirs(checkpoint_directory, exist_ok=True)
+        path_final = os.path.join(checkpoint_directory, filename)
+        path_tmp = path_final + ".tmp"
+
+        np.savez(path_tmp,
+                 previous_x=self.previous_x,
+                 previous_action=self.previous_action,
+                 previous_t=self.previous_t,
+                 previous_n=self.previous_n,
+                 previous_b=self.previous_b)
+
+        os.replace(path_tmp, path_final)
+        return path_final
+
+    def load(self, restart_directory, filename="abf_rank_tracker.npz"):
+        path = os.path.join(restart_directory, filename)
+        if not os.path.isfile(path):
+            return False
+
+        data = np.load(path)
+        self.previous_x      = data.get("previous_x",      self.previous_x)
+        self.previous_action = data.get("previous_action", self.previous_action)
+        self.previous_t      = data.get("previous_t",      self.previous_t)
+        self.previous_n      = data.get("previous_n",      self.previous_n)
+        self.previous_b      = data.get("previous_b",      self.previous_b)
+        return True
+        
         

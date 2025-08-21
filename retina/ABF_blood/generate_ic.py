@@ -3,23 +3,21 @@
 import mirheo as mir
 import numpy as np
 import sys
-from utils import generate_simple_line,double_reflection_rmf,generate_helix
 
 from parameters import (Parameters,
+                        ContactParams,
                         load_parameters)
 import objplacement
 
-def gen_com_q_pipe(*,
-                   abf_position: np.ndarray,
-                   domain: tuple,
-                   RBC_mesh,
-                   abf_mesh,
-                   scale_ini: float,
-                   Ht: float,
-                   seed: int=4242):
-    """
-    Create initial positions for RBCs in a pipe, scaled to a smaller mesh.
-    """
+def gen_com_q(*,
+              abf_position: np.ndarray,
+              domain: tuple,
+              RBC_mesh,
+              abf_mesh,
+              scale_ini: float,
+              Ht: float,
+              seed: int):
+
     RBC_extents = np.ptp(RBC_mesh.vertices, axis=0) * scale_ini
     abf_extents = np.ptp(abf_mesh.vertices, axis=0)
     RBC_radius = np.max(RBC_extents) / 2
@@ -34,7 +32,6 @@ def gen_com_q_pipe(*,
 
     com_q = objplacement.generate_ic(geometry=geom,
                                      obj_volume=RBC_mesh.volume,
-                                     obj_extents=RBC_extents,
                                      obj_radius=RBC_radius,
                                      target_volume_fraction=Ht,
                                      seed=seed)
@@ -45,52 +42,49 @@ def gen_com_q_pipe(*,
 def generate_cells(p,
                    *,
                    abf_coords: list,
+                   scale_ini: float,
                    Ht: float,
+                   seed: int,
                    ranks: tuple=(1,1,1),
-                   seed: int=4242):
+                   position_abf : list):
 
-    rc = p.rc
-    Lx = p.Lx
-    Ly = p.Ly
-    Lz = p.Lz
-    RA = p.RA
-    kb = p.rbc_params.bending_modulus()
+    m      = p.m
+    rc     = p.rc
+    RA     = p.RA
+    domain = p.domain
 
-    max_contact_force = p.rbc_params.shear_modulus() * RA * 10
-    drag = 2
+    drag = 4
 
-    domain = (Lx, Ly, Lz)
-    path = generate_helix(num_points=10000, radius=Ly*1/4, pitch=Lx, turns=1, clockwise=True, x_0=0, y_0=4/5*domain[1], z_0=1/2*domain[2])
+    abf_position = np.array(position_abf)
 
-    abf_position = np.array(path[5000])
+    com_q = gen_com_q(abf_position=abf_position,
+                      domain=domain,
+                      RBC_mesh=p.mesh_ini,
+                      abf_mesh=p.mesh_abf,
+                      scale_ini=scale_ini,
+                      Ht=Ht, seed=seed)
 
-    scale_ini = 0.5
-    com_q = gen_com_q_pipe(abf_position=abf_position,
-                           domain=domain,
-                           RBC_mesh=p.mesh_ini,
-                           abf_mesh=p.mesh_abf,
-                           scale_ini=scale_ini,
-                           Ht=Ht, seed=seed)
-
-    T = np.sqrt(p.m * RA**2 / kb)
-    tend = 30 * T
+    T = np.sqrt(m * RA**2  / p.rbc_params.bending_modulus())
+    tend = 50 * T
     dt = 0.001
 
     niters = int(tend/dt)
-
+    print("Number of iterations :",niters)
     checkpoint_every = niters-5
 
     u = mir.Mirheo(ranks, domain, debug_level=3, log_filename='generate_ic',
                    checkpoint_folder="generate_ic/", checkpoint_every=checkpoint_every,
-                   max_obj_half_length=RA)
+                   max_obj_half_length=1.5*RA)
 
+    cp = p.contact_rbcs
+    sigma             = cp.sigma
+    eps               = cp.eps
+    max_contact_force = cp.max_contact_force
 
-    sigma = RA/10
-    eps = 3 * kb
-
-    contact = mir.Interactions.Pairwise('contact', rc, kind='RepulsiveLJ', epsilon=eps, sigma=sigma, aware_mode='Object', max_force=max_contact_force)
+    contact = mir.Interactions.Pairwise('contact', rc, kind='RepulsiveLJ',
+                                        epsilon=eps, sigma=sigma, aware_mode='Object',
+                                        max_force=max_contact_force)
     u.registerInteraction(contact)
-
 
     p.rbc_params.gamma = 300
     rbc_int = mir.Interactions.MembraneForces('int_rbc', **p.rbc_params.to_interactions(), stress_free=True,
@@ -100,32 +94,47 @@ def generate_cells(p,
     vv = mir.Integrators.VelocityVerlet('vv')
     u.registerIntegrator(vv)
 
+    wall = mir.Walls.SDF('walls', p.sdf_filename)
+    u.registerWall(wall)
+
     mesh_rbc = mir.ParticleVectors.MembraneMesh(p.mesh_ini.vertices.tolist(),
                                                 p.mesh_ref.vertices.tolist(),
                                                 p.mesh_ini.faces.tolist())
-    pv_rbc = mir.ParticleVectors.MembraneVector('rbc', mass=p.m, mesh=mesh_rbc)
+    pv_rbc = mir.ParticleVectors.MembraneVector('rbc', mass=m, mesh=mesh_rbc)
     u.registerParticleVector(pv_rbc, mir.InitialConditions.Membrane(com_q, global_scale=scale_ini))
 
     mesh_abf = mir.ParticleVectors.Mesh(p.mesh_abf.vertices.tolist(), p.mesh_abf.faces.tolist())
     I = np.diag(p.mesh_abf.moment_inertia * p.nd * p.m).tolist()
     pv_abf = mir.ParticleVectors.RigidObjectVector('abf', mass=p.m, inertia=I, object_size=len(abf_coords), mesh=mesh_abf)
-    ic_abf = mir.InitialConditions.Rigid([abf_position.tolist() + [1, 0, 0, 0]], abf_coords)
+    q = [np.cos(np.pi/4), 0.0, 0.0, np.sin(np.pi/4)]
+    ic_abf = mir.InitialConditions.Rigid([abf_position.tolist() + q], abf_coords)
     # We fix th abf on purpose, no integrator for it.
     #vv_abf = mir.Integrators.RigidVelocityVerlet("vv_abf")
     u.registerParticleVector(pv_abf, ic_abf)
 
     u.setInteraction(contact, pv_rbc, pv_rbc)
-    u.setInteraction(contact, pv_rbc, pv_abf)
+    u.setInteraction(contact, pv_abf, pv_rbc)
 
     u.setInteraction(rbc_int, pv_rbc, pv_rbc)
     u.setIntegrator(vv, pv_rbc)
 
+    h = 0.1 * rc
+    u.registerPlugins(mir.Plugins.createWallRepulsion("wall_force", pv_rbc, wall,
+                                                      C=max_contact_force/h, h=h,
+                                                      max_force=max_contact_force))
+
     u.registerPlugins(mir.Plugins.createParticleDrag("drag", pv_rbc, drag))
 
-    dump_every = int(niters//5)
-    u.registerPlugins(mir.Plugins.createDumpMesh("RBC_mesh_dump", pv_rbc, dump_every, 'ply_generate_ic/'))
-    u.registerPlugins(mir.Plugins.createDumpMesh("abf_mesh_dump", pv_abf, dump_every, 'ply_generate_ic/'))
-    u.registerPlugins(mir.Plugins.createStats('stats', every=dump_every))
+    # u.registerPlugins(mir.Plugins.createDumpMesh("RBC_mesh_dump", pv_rbc, checkpoint_every-100, 'ply_generate_ic/'))
+    # u.registerPlugins(mir.Plugins.createDumpMesh("ABF_mesh_dump", pv_abf, checkpoint_every-100, 'ply_generate_ic/'))
+    u.registerPlugins(mir.Plugins.createStats('stats', every=checkpoint_every))
+
+    if u.isMasterTask():
+        print(f"domain={domain}")
+        print(f"RA={RA}")
+        sys.stdout.flush()
+
+    u.dumpWalls2XDMF([wall], h=(1,1,1), filename='h5/wall')
 
     u.run(niters, dt)
 
@@ -133,23 +142,26 @@ def generate_cells(p,
 def main(argv):
     import argparse
     parser = argparse.ArgumentParser(description='Generate cells with given hematocrit in pipe.')
-    parser.add_argument('parameters', type=str, help="Parameters of the simulation.")
+    parser.add_argument('--params', type=str, default="parameters.pkl", help="Parameters file.")
     parser.add_argument('--abf-coords', type=str, required=True, help="The coordinates of the frozen particles of the abf.")
-    parser.add_argument('--Ht', type=float, default=0.106, help="Hematocrit, in [0,1].")
-    parser.add_argument('--seed', type=int, default=4242, help="Random seed for initial positions.")
-    parser.add_argument('--ranks', type=int, nargs=3, default=[1, 1, 1])
+    parser.add_argument('--ranks', type=int, nargs=3, default=(1, 1, 1), help="Ranks in each dimension.")
+    parser.add_argument('--Ht', type=float, default=0.20, help="Hematocrit, in [0,1].")
+    parser.add_argument('--scale-ini', type=float, default=0.5, help="Initial size of the RBCs.")
+    parser.add_argument('--seed', type=int, default=12345, help="Seed for initial placement of the RBCs.")
     args = parser.parse_args(argv)
 
     abf_coords = np.loadtxt(args.abf_coords)
 
-    p = load_parameters(args.parameters)
+    p = load_parameters(args.params)
 
+    path = np.load(p.path_filename)
     generate_cells(p,
                    abf_coords=abf_coords.tolist(),
                    Ht=args.Ht,
+                   scale_ini=args.scale_ini,
+                   ranks=tuple(args.ranks),
                    seed=args.seed,
-                   ranks=tuple(args.ranks))
-
+                   position_abf = list(path[0]))
 
 if __name__ == '__main__':
     main(sys.argv[1:])
