@@ -14,6 +14,8 @@ cupy_test.py
 *.ply
 *.h5
 *.xmf
+*.csv
+*.txt
 Miniforge3-Linux-x86_64.sh
 abf_rl_wo/submit_job.slurm
 environment.yml

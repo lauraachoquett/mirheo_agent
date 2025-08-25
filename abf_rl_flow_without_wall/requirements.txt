@@ -1,5 +1,0 @@
-cupy
-numba
-numpy
-numpy-quaternion
-pint
