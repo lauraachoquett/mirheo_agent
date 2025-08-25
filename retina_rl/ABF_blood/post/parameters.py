@@ -33,16 +33,23 @@ class Parameters:
     U: float
     mesh_ini: trimesh.Trimesh
     mesh_ref: trimesh.Trimesh
+    mesh_ABF: trimesh.Trimesh
     rbc_params: dpdprops.MembraneParams
     dpd_oo: dpdprops.DPDParams
     dpd_ii: dpdprops.DPDParams
     dpd_io: dpdprops.DPDParams
     dpd_rbco: dpdprops.DPDParams
     dpd_rbci: dpdprops.DPDParams
+    omega: float
+    ABF_length: float
+    ABF_radius: float
+    magn_B: float
+    magn_m: tuple
     contact_rbcs: ContactParams
     length_scale_: pint.Quantity
     time_scale_: pint.Quantity
     mass_scale_: pint.Quantity
+    magn_scale_: pint.Quantity
     shear_scale_factor: float
     wall_repulsion_length: float
     sdf_filename: str
@@ -73,8 +80,11 @@ def estimated_relative_viscosity(D: '[length]',
 
 def create_parameters(*,
                       ureg,
-                      mesh_ini,
-                      mesh_ref,
+                      mesh_ini: trimesh.Trimesh,
+                      mesh_ref: trimesh.Trimesh,
+                      mesh_ABF: trimesh.Trimesh,
+                      freq_: pint.Quantity,
+                      ABF_radius_: pint.Quantity,
                       Ht: float,
                       RA: float,
                       Re: float,
@@ -83,9 +93,13 @@ def create_parameters(*,
                       entry_radius_: pint.Quantity,
                       entry_velocity_: pint.Quantity,
                       wall_repulsion_length_: pint.Quantity,
+                      magn_B_: pint.Quantity,
+                      magn_m_: pint.Quantity,
                       sdf_filename: str,
                       forces_filename: str,
                       verbose: bool=True):
+
+    assert freq_.check('[frequency]')
 
     rescale_mesh(mesh_ini, RA)
     rescale_mesh(mesh_ref, RA)
@@ -102,6 +116,7 @@ def create_parameters(*,
     kBT_ = kB_ * T_
 
     # physical parameters
+    omega_ = 2 * np.pi * freq_
     mean_shear_ = (entry_velocity_ / entry_radius_).to('Hz')
 
     # dimless numbers in "real" world
@@ -109,6 +124,7 @@ def create_parameters(*,
     Ca_ = float(mean_shear_ * RA_ * etao_ / rbc.mu)
     E_ = float(rbc.eta_m / (RA_ * etao_))
     kb_kBT_ = float(rbc.kappab / kBT_)
+    torque_ratio_ = float(magn_B_ * magn_m_ / (ABF_radius_**3 * etao_ * omega_))
 
     # go to simulation world
     rc = 1
@@ -193,6 +209,44 @@ def create_parameters(*,
     dpd_rbci_prms = dpdprops.create_fsi_dpd_params(fluid_params=dpd_ii_prms, nd_membrane=nd_2D_membrane)
 
 
+
+    # ABF params
+
+    ABF_radius = float(ABF_radius_ / length_scale_)
+    freq = float(freq_ * time_scale_)
+    omega = 2 * np.pi * freq
+
+    mesh_ABF.vertices *= ABF_radius / np.min(0.5 * np.ptp(mesh_ABF.vertices, axis=0))
+
+    ABF_extents = np.ptp(mesh_ABF.vertices, axis=0)
+    ABF_extents_ = ABF_extents * length_scale_
+    ABF_length = max(ABF_extents)
+
+    # align the mesh to its principal axes
+    I = mesh_ABF.moment_inertia
+
+    Lambda, W = trimesh.inertia.principal_axis(I)
+    vertices = np.array(mesh_ABF.vertices)
+    vertices -= mesh_ABF.center_mass
+    vertices = np.dot(vertices, W.T)
+    mesh_ABF.vertices = vertices
+    if mesh_ABF.volume < 0:
+        mesh_ABF.faces = mesh_ABF.faces[:,::-1]
+
+    # magnetic params
+
+    magn_B = 10        # sets the magnetic scale
+    torque_ratio = torque_ratio_
+    magn_m = torque_ratio * omega * ABF_radius**3 * dpd_oo_prms.dynamic_viscosity() / magn_B
+    magn_m = np.array([0, magn_m, 0])
+    magn_m = np.dot(magn_m, W.T)
+    if magn_m[2] < 0:
+        magn_m *= -1
+    magn_m = tuple(magn_m)
+
+    magn_scale_ = (magn_B_ / magn_B).to(ureg.T)
+
+
     # body force
     D_ = 2 * entry_radius_
     D = 2 * entry_radius
@@ -220,7 +274,8 @@ def create_parameters(*,
     n, h, forces = force_read(forces_filename)
     magn = np.linalg.norm(forces, axis=-1)
     fscale = pressure_gradient / np.max(magn) / nd
-    forces *= fscale * 4 # TODO: factor to be tuned
+    fscale *= 4 # TODO: factor to be tuned
+    forces *= fscale
     h = [scale * h_ for h_ in h]
     rescaled_force_filename="forces.rescaled.sdf"
     force_write(rescaled_force_filename, forces, n, h)
@@ -244,6 +299,7 @@ def create_parameters(*,
         print(f"force_scale = {force_scale_.to(ureg.pN)}")
         print(f"time_scale = {time_scale_.to(ureg.s)}")
         print(f"mass_scale = {mass_scale_.to(ureg.kg)}")
+        print(f"magn_scale = {magn_scale_.to(ureg.T)}")
         print()
 
         print(f"Domain size: {domain}")
@@ -253,6 +309,7 @@ def create_parameters(*,
         print(f"Ventry = {entry_velocity_} ({float(entry_velocity_/length_scale_*time_scale_)})")
         print(f"etao = {etao_} ({etao})")
         print(f"mean shear = {mean_shear_.to(1/ureg.s)} ({mean_shear})")
+        print(f"force field scale = {fscale}")
         print()
 
         print(f"Re = {Re_} (phys), {Re} (sim)")
@@ -264,9 +321,17 @@ def create_parameters(*,
         print(f"dpd_oo = {dpd_oo_prms}")
         print(f"dpd_ii = {dpd_ii_prms}")
         print(f"dpd_io = {dpd_io_prms}")
+        print(f"dpd_rbco = {dpd_rbco_prms}")
+        print(f"dpd_rbci = {dpd_rbci_prms}")
 
         print(f"pressure_gradient = {pressure_gradient}")
         print(f"contact params = {contact_rbcs}")
+        print()
+
+        print(f"ABF dimensions = {ABF_extents_} ({ABF_extents})")
+        print(f"omega = {omega_} ({omega})")
+        print(f"B = {magn_B_} ({magn_B})")
+        print(f"m = {magn_m_} ({magn_m})")
 
         sys.stdout.flush()
 
@@ -275,16 +340,23 @@ def create_parameters(*,
                    domain=domain,
                    mesh_ini=mesh_ini,
                    mesh_ref=mesh_ref,
+                   mesh_ABF=mesh_ABF,
                    rbc_params=rbc_prms,
                    dpd_oo=dpd_oo_prms,
                    dpd_ii=dpd_ii_prms,
                    dpd_io=dpd_io_prms,
                    dpd_rbco=dpd_rbco_prms,
                    dpd_rbci=dpd_rbci_prms,
+                   ABF_length=ABF_length,
+                   ABF_radius=ABF_radius,
+                   omega=omega,
+                   magn_B=magn_B,
+                   magn_m=magn_m,
                    contact_rbcs=contact_rbcs,
                    length_scale_=length_scale_,
                    time_scale_=time_scale_,
                    mass_scale_=mass_scale_,
+                   magn_scale_=magn_scale_,
                    shear_scale_factor=f,
                    wall_repulsion_length=wall_repulsion_length,
                    sdf_filename=rescaled_sdf_filename,
@@ -315,29 +387,42 @@ def get_quantity(ureg: pint.UnitRegistry,
 
 def main(argv):
     import argparse
-    parser = argparse.ArgumentParser(description='Run RBCs flowing in a capillary pipe.')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('mesh_ABF', type=str, help="ABF mesh.")
     parser.add_argument('--rbc-res', type=int, default=3, help="Subdivision level of the mesh.")
     parser.add_argument('--Re', type=float, default=0.5, help="Simulation Reynolds number.")
     parser.add_argument('--RA', type=float, default=4, help="Reduced radius of the RBC, in simulation units.")
     parser.add_argument('--Ht', type=float, default=0.05, help="Hematocrit")
     parser.add_argument('--visc-ratio', type=float, default=5, help="Viscosity ratio between inner and outer solvent")
     parser.add_argument('--wall-repulsion-length', type=str, default="0.5_um", help="Repulsion length of the wall forces")
-    parser.add_argument('--out-params', type=str, default="parameters.pkl", help="Save all simulation parameters to this file.")
     parser.add_argument('--sdf', type=str, required=True, help="SDF file")
     parser.add_argument('--forces', type=str, required=True, help="forces file")
     parser.add_argument('--entry-radius', type=str, default='5_um', help="radius of largest pipe")
     parser.add_argument('--entry-velocity', type=str, default='1_mm_per_s', help="inlet velocity")
+    parser.add_argument('--freq', type=str, default="10_Hz", help="Frequency of rotation of the ABF.")
+    parser.add_argument('--ABF-radius', type=str, default="2_um", help="Radius of the ABF.")
+    parser.add_argument('--magn-m', type=str, default="1e-14_N_m_per_T", help="Magnitude of the magnetic moment of the swimmer.")
+    parser.add_argument('--out-params', type=str, default="parameters.pkl", help="Save all simulation parameters to this file.")
+    parser.add_argument('--out-ABF-mesh', type=str, default="ABF_mesh.ply", help="Save rescaled ABF mesh to this file.")
     args = parser.parse_args(argv)
 
     rbc_res = args.rbc_res
     mesh_ini = dpdprops.load_equilibrium_mesh(rbc_res)
     mesh_ref = dpdprops.load_stress_free_mesh(rbc_res)
 
+    mesh_ABF = trimesh.load_mesh(args.mesh_ABF)
+
     ureg = pint.UnitRegistry()
 
     wall_repulsion_length_ = get_quantity(ureg, args.wall_repulsion_length)
     entry_radius_ = get_quantity(ureg, args.entry_radius)
     entry_velocity_ = get_quantity(ureg, args.entry_velocity)
+
+    ABF_radius_ = get_quantity(ureg, args.ABF_radius)
+
+    freq_ = get_quantity(ureg, args.freq)
+    magn_B_ = 3 * ureg.mT
+    magn_m_ = get_quantity(ureg, args.magn_m)
 
     p = create_parameters(ureg=ureg,
                           Re=args.Re,
@@ -346,6 +431,11 @@ def main(argv):
                           visc_ratio=args.visc_ratio,
                           mesh_ini=mesh_ini,
                           mesh_ref=mesh_ref,
+                          mesh_ABF=mesh_ABF,
+                          freq_=freq_,
+                          magn_B_=magn_B_,
+                          magn_m_=magn_m_,
+                          ABF_radius_=ABF_radius_,
                           wall_repulsion_length_=wall_repulsion_length_,
                           entry_velocity_=entry_velocity_,
                           entry_radius_=entry_radius_,
@@ -354,6 +444,7 @@ def main(argv):
 
     dump_parameters(p, args.out_params)
 
+    p.mesh_ABF.export(args.out_ABF_mesh)
 
 
 if __name__ == '__main__':

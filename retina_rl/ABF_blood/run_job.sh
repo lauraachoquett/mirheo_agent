@@ -2,7 +2,7 @@
 set -eu
 
 # === Paramètres par défaut ===
-Ht=0.25
+Ht=0.05
 entry_radius=10_um
 entry_velocity=1_mm_per_s
 
@@ -62,18 +62,19 @@ prefix=$SCRATCH/koumoutsakos_lab/Lab/lchoquet
 
 abf_data_dir=$srcdir/data
 abf_tools_dir=$srcdir/ABFs/tools
-policy_dir=$srcdir/../policy_file
+policy_dir=/n/home12/lchoquet/mirheo_agent/policy_file/models_07_10_10_33
 retina_dir=$srcdir/forces
 dir_path=$srcdir/data/retina2D_path_time_2025-05-28_20-40-05.npy
 
 origin_abf_mesh=$abf_data_dir/helix_head_P_${abf_P}_L_${abf_L}.ply
 
-rundir=$prefix/Ht_${Ht}_jobs_${num_gpus}_ic_run
+rundir=$prefix/Ht_${Ht}_L_${abf_L}_P_${abf_P}_jobs_${num_gpus}_charging_policy
 mkdir -p "$rundir"
 
 # === Fichiers à copier ===
 cp $srcdir/{parameters.py,generate_ic.py,main.py,run_job.sh,load_NN.py,TD3.py,utils.py} $rundir
 cp $abf_tools_dir/generate_frozen.py $rundir
+# cp -r $abf_data_dir/generate_ic $rundir
 
 parameters=parameters.pkl
 abf_coords=abf_coords.txt
@@ -92,10 +93,10 @@ python --version
 cat > "$batch" <<EOS
 #!/bin/bash
 #SBATCH --partition=seas_gpu
-#SBATCH --nodes=$num_gpus            # num_ranks nœuds (un par sous-domaine)
-#SBATCH --ntasks-per-node=2           # 2 ranks MPI par nœud
-#SBATCH --gres=gpu:1                  # 1 GPU alloué par nœud
-#SBATCH -t 0-01:00
+#SBATCH --nodes=$num_gpus            # num_ranks noeuds (un par sous-domaine)
+#SBATCH --ntasks-per-node=2           # 2 ranks MPI par noeud
+#SBATCH --gres=gpu:1                  # 1 GPU alloué par noeud
+#SBATCH -t 0-00:30
 #SBATCH --job-name=gpus
 #SBATCH --mem=40G
 #SBATCH --output=$rundir/output.log
@@ -110,17 +111,30 @@ cd $rundir
 
 echo "=== PREPROCESSING ==="
 srun --mpi=pmi2 -n 1 python ./parameters.py \
+        $origin_abf_mesh \
         --sdf $retina_dir/retina.sdf \
         --forces $retina_dir/forces.sdf \
         --Ht $Ht \
         --entry-radius $entry_radius \
         --entry-velocity $entry_velocity \
+        --abf-radius $abf_radius \
+        --freq $freq \
+        --magn-m $magn_m \
         --out-params $parameters \
+        --out-abf-mesh $abf_mesh \
+        --dir_path $dir_path
+echo "=== PARAMETERS CREATED ==="
+
+srun --mpi=pmi2 -n 1 python ./generate_frozen.py \
+    $abf_mesh \
+    --out-mesh $abf_mesh \
+    --out-coords $abf_coords
 
 
 echo "=== GENERATING RBCs ICs ==="
 srun --mpi=pmi2 -n $num_ranks python ./generate_ic.py \
     --params "$parameters" \
+    --abf-coords "$abf_coords" \
     --ranks $Nx $Ny $Nz \
     --Ht $Ht \
     --scale-ini 0.3
@@ -128,8 +142,11 @@ srun --mpi=pmi2 -n $num_ranks python ./generate_ic.py \
 echo "=== RUNNING SIMULATION ==="
 srun --mpi=pmi2 -n $num_ranks python ./main.py \
     --params $parameters \
+    --abf-coords $abf_coords \
+    --policy $policy_dir/agent \
+    --no-visc \
     --ranks $Nx $Ny $Nz \
-    --no-visc
+    --checkpoint-dir $checkpoint 
 
 
 EOS

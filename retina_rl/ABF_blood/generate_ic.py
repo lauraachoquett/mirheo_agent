@@ -10,17 +10,29 @@ from parameters import (Parameters,
 import objplacement
 
 def gen_com_q(*,
+              abf_position: np.ndarray,
               domain: tuple,
-              mesh,
+              RBC_mesh,
+              abf_mesh,
               scale_ini: float,
               Ht: float,
               seed: int):
-    radius = np.max(np.ptp(mesh.vertices, axis=0))/2 * scale_ini
 
-    geom = objplacement.DomainGeometry(L=domain)
+    RBC_extents = np.ptp(RBC_mesh.vertices, axis=0) * scale_ini
+    abf_extents = np.ptp(abf_mesh.vertices, axis=0)
+    RBC_radius = np.max(RBC_extents) / 2
+
+    base_geom = objplacement.DomainGeometry(L=domain)
+
+    abf_positions = abf_position.reshape((-1,3))
+
+    geom = objplacement.GeometryWithHoles(base=base_geom,
+                                          hole_positions=abf_positions,
+                                          hole_extents=abf_extents)
+
     com_q = objplacement.generate_ic(geometry=geom,
-                                     obj_volume=mesh.volume,
-                                     obj_radius=radius,
+                                     obj_volume=RBC_mesh.volume,
+                                     obj_radius=RBC_radius,
                                      target_volume_fraction=Ht,
                                      seed=seed)
 
@@ -29,10 +41,12 @@ def gen_com_q(*,
 
 def generate_cells(p,
                    *,
+                   abf_coords: list,
                    scale_ini: float,
                    Ht: float,
                    seed: int,
-                   ranks: tuple=(1,1,1)):
+                   ranks: tuple=(1,1,1),
+                   abf_position : list):
 
     m      = p.m
     rc     = p.rc
@@ -41,8 +55,12 @@ def generate_cells(p,
 
     drag = 4
 
-    com_q = gen_com_q(domain=domain,
-                      mesh=p.mesh_ini,
+    abf_position = np.array(abf_position)
+
+    com_q = gen_com_q(abf_position=abf_position,
+                      domain=domain,
+                      RBC_mesh=p.mesh_ini,
+                      abf_mesh=p.mesh_abf,
                       scale_ini=scale_ini,
                       Ht=Ht, seed=seed)
 
@@ -51,11 +69,12 @@ def generate_cells(p,
     dt = 0.001
 
     niters = int(tend/dt)
-
+    print("Number of iterations :",niters)
     checkpoint_every = niters-5
 
-    u = mir.Mirheo(ranks, domain, debug_level=3, log_filename='generate_ic',
-                   checkpoint_folder="generate_ic/", checkpoint_every=checkpoint_every)
+    u = mir.Mirheo(ranks, domain, debug_level=5, log_filename='generate_ic',
+                   checkpoint_folder="generate_ic/", checkpoint_every=checkpoint_every,
+                   max_obj_half_length=1.5*RA)
 
     cp = p.contact_rbcs
     sigma             = cp.sigma
@@ -84,7 +103,20 @@ def generate_cells(p,
     pv_rbc = mir.ParticleVectors.MembraneVector('rbc', mass=m, mesh=mesh_rbc)
     u.registerParticleVector(pv_rbc, mir.InitialConditions.Membrane(com_q, global_scale=scale_ini))
 
+    mesh_abf = mir.ParticleVectors.Mesh(p.mesh_abf.vertices.tolist(), p.mesh_abf.faces.tolist())
+    I = np.diag(p.mesh_abf.moment_inertia * p.nd * p.m).tolist()
+    pv_abf = mir.ParticleVectors.RigidObjectVector('abf', mass=p.m, inertia=I, object_size=len(abf_coords), mesh=mesh_abf)
+    q = [np.cos(np.pi/4), 0.0, 0.0, np.sin(np.pi/4)]
+    abf_position[2]=0.5*domain[2]
+    ic_abf = mir.InitialConditions.Rigid([abf_position.tolist() + q], abf_coords)
+    
+    # We fix th abf on purpose, no integrator for it.
+    #vv_abf = mir.Integrators.RigidVelocityVerlet("vv_abf")
+    u.registerParticleVector(pv_abf, ic_abf)
+
     u.setInteraction(contact, pv_rbc, pv_rbc)
+    u.setInteraction(contact, pv_abf, pv_rbc)
+
     u.setInteraction(rbc_int, pv_rbc, pv_rbc)
     u.setIntegrator(vv, pv_rbc)
 
@@ -95,16 +127,16 @@ def generate_cells(p,
 
     u.registerPlugins(mir.Plugins.createParticleDrag("drag", pv_rbc, drag))
 
+    # u.registerPlugins(mir.Plugins.createDumpMesh("RBC_mesh_dump", pv_rbc, checkpoint_every-100, 'ply_generate_ic/'))
+    # u.registerPlugins(mir.Plugins.createDumpMesh("ABF_mesh_dump", pv_abf, checkpoint_every-100, 'ply_generate_ic/'))
+    u.registerPlugins(mir.Plugins.createStats('stats', every=checkpoint_every))
+
     if u.isMasterTask():
         print(f"domain={domain}")
         print(f"RA={RA}")
         sys.stdout.flush()
 
     u.dumpWalls2XDMF([wall], h=(1,1,1), filename='h5/wall')
-
-    dump_every = int(10.0/dt)
-    u.registerPlugins(mir.Plugins.createDumpMesh("mesh_dump", pv_rbc, dump_every, 'ply_generate_ic/'))
-    u.registerPlugins(mir.Plugins.createStats('stats', every=dump_every))
 
     u.run(niters, dt)
 
@@ -113,19 +145,25 @@ def main(argv):
     import argparse
     parser = argparse.ArgumentParser(description='Generate cells with given hematocrit in pipe.')
     parser.add_argument('--params', type=str, default="parameters.pkl", help="Parameters file.")
+    parser.add_argument('--abf-coords', type=str, required=True, help="The coordinates of the frozen particles of the abf.")
     parser.add_argument('--ranks', type=int, nargs=3, default=(1, 1, 1), help="Ranks in each dimension.")
     parser.add_argument('--Ht', type=float, default=0.20, help="Hematocrit, in [0,1].")
     parser.add_argument('--scale-ini', type=float, default=0.5, help="Initial size of the RBCs.")
-    parser.add_argument('--seed', type=int, default=12345, help="Seed for initial placement of the RBCs.")
+    parser.add_argument('--seed', type=int, default=45678, help="Seed for initial placement of the RBCs.")
     args = parser.parse_args(argv)
+
+    abf_coords = np.loadtxt(args.abf_coords)
 
     p = load_parameters(args.params)
 
+    path = np.load(p.path_filename)
     generate_cells(p,
+                   abf_coords=abf_coords.tolist(),
                    Ht=args.Ht,
                    scale_ini=args.scale_ini,
                    ranks=tuple(args.ranks),
-                   seed=args.seed)
+                   seed=args.seed,
+                   abf_position = list(path[0]))
 
 if __name__ == '__main__':
     main(sys.argv[1:])
